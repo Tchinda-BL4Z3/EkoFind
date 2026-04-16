@@ -160,35 +160,67 @@ app.post('/stop-recording', upload.single('audio'), async (req, res) => {
             return res.json({ status: "error", message: "Audio trop court" });
         }
 
+        // Try Python microservice first
         const { execSync } = require('child_process');
-
-        // Use curl instead of axios (more reliable)
-        const curlCmd = `curl -s -X POST https://api.audd.io/ -F "api_token=${AUDD_API_TOKEN}" -F "file=@${filePath}" -F "return=apple_music,spotify" --max-time 60`;
-        let curlResponse;
-        try {
-            curlResponse = execSync(curlCmd, { encoding: 'utf8', timeout: 65000 });
-        } catch (curlError) {
-            throw new Error('curl failed: ' + curlError.message);
-        }
-        console.log('📨 Full AudD response:', JSON.stringify(data));
         
-        if (data.status === 'success' && data.result) {
-            console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
-            res.json({
-                status: "success",
-                result: {
-                    title: data.result.title,
-                    artist: data.result.artist,
-                    album: data.result.album || "Album inconnu",
-                    link: data.result.song_link || ""
+        try {
+            let pythonResult;
+            try {
+                pythonResult = execSync(`python3 /home/tchinda/Documents/@Codex/Node.js-shazam/shazam-project/backend/music_recognition.py < ${filePath} 2>/dev/null || echo '{"status":"error"}'`, { encoding: 'utf8', timeout: 30000 });
+                
+                // Try calling Python HTTP service instead
+                const pythonCmd = `curl -s -X POST http://localhost:3001/identify -F "file=@${filePath}"`;
+                pythonResult = execSync(pythonCmd, { encoding: 'utf8', timeout: 30000 });
+                
+                const pyData = JSON.parse(pythonResult);
+                if (pyData.status === 'success') {
+                    console.log('✅ Recognized via Python:', pyData.result?.title);
+                    return res.json(pyData);
                 }
-            });
-        } else if (data.error) {
-            res.json({ status: "error", message: data.error.error_message || "Erreur API" });
-        } else {
-            res.json({ status: "error", message: "Musique non reconnue" });
+            } catch (pyError) {
+                console.log('⚠️ Python service failed:', pyError.message);
+            }
+        } catch (pyErr) {
+            console.log('Python not available:', pyErr.message);
         }
 
+        // Fallback to AudD with curl with retry
+        let data = null;
+        let curlCmd = '';
+        
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                console.log(`🔄 Tentative ${attempt}/3 vers AudD...`);
+                curlCmd = `curl -s --retry 3 --retry-delay 2 -X POST https://api.audd.io/ -F "api_token=${AUDD_API_TOKEN}" -F "file=@${filePath}" -F "return=apple_music,spotify" --max-time 90`;
+                curlResponse = execSync(curlCmd, { encoding: 'utf8', timeout: 95000 });
+                data = JSON.parse(curlResponse);
+                break;
+            } catch (curlError) {
+                console.log(`⚠️ Tentative ${attempt} echouee:`, curlError.message);
+                if (attempt === 3) {
+                    data = { status: 'error', message: 'Connexion echouee apres 3 tentatives' };
+                }
+            }
+        }
+        
+        console.log('📨 AudD response:', data?.status);
+
+    if (data?.status === 'success' && data?.result) {
+        console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
+        return res.json({
+            status: 'success',
+            result: {
+                title: data.result.title,
+                artist: data.result.artist,
+                album: data.result.album || 'Album inconnu',
+                link: data.result.song_link || ''
+            }
+        });
+    }
+
+    return res.json({ status: 'error', message: data?.message || 'Musique non reconnue' });
+
+    // Handle errors
     } catch (error) {
         console.error("Erreur identification:", error.message);
         res.status(500).json({ error: "Erreur lors de l'analyse." });
