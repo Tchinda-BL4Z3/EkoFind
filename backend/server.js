@@ -19,9 +19,33 @@ if (!fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: uploadDir + '/', limits: { fileSize: 25 * 1024 * 1024 } });
 
+// AudioTag API (FREE - 3 hours/month)
+const AUDIOTAG_API_KEY = process.env.AUDIOTAG_API_KEY || '';
+
+async function recognizeWithAudioTag(filePath) {
+    if (!AUDIOTAG_API_KEY) {
+        throw new Error("AudioTag API key not configured");
+    }
+    
+    console.log('🎵 Sending to AudioTag...');
+    
+    const form = new FormData();
+    form.append('file', fs.createReadStream(filePath));
+    form.append('api_key', AUDIOTAG_API_KEY);
+    form.append('skip', '20');
+    
+    const response = await axios.post('https://audiotag.info/api/', form, {
+        headers: form.getHeaders(),
+        timeout: 60000
+    });
+    
+    console.log('📥 AudioTag response:', JSON.stringify(response.data).substring(0, 200));
+    return response.data;
+}
+
 const AUDD_API_TOKEN = process.env.AUDD_API_TOKEN || "710700a1bebd7e387e268bf238669573";
 
-const ACR_HOST = process.env.ACR_HOST || "identify-us-west-2.acrcloud.com";
+const ACR_HOST = process.env.ACR_HOST || "api.acrcloud.com";
 const ACR_ACCESS_KEY = process.env.ACR_ACCESS_KEY || "";
 const ACR_SECRET_KEY = process.env.ACR_SECRET_KEY || "";
 
@@ -136,17 +160,16 @@ app.post('/stop-recording', upload.single('audio'), async (req, res) => {
             return res.json({ status: "error", message: "Audio trop court" });
         }
 
-        const form = new FormData();
-        form.append('api_token', AUDD_API_TOKEN);
-        form.append('file', fs.createReadStream(filePath));
-        form.append('return', 'apple_music,spotify');
+        const { execSync } = require('child_process');
 
-        const response = await axios.post('https://api.audd.io/', form, {
-            headers: form.getHeaders(),
-            timeout: 20000 
-        });
-
-        const data = response.data;
+        // Use curl instead of axios (more reliable)
+        const curlCmd = `curl -s -X POST https://api.audd.io/ -F "api_token=${AUDD_API_TOKEN}" -F "file=@${filePath}" -F "return=apple_music,spotify" --max-time 60`;
+        let curlResponse;
+        try {
+            curlResponse = execSync(curlCmd, { encoding: 'utf8', timeout: 65000 });
+        } catch (curlError) {
+            throw new Error('curl failed: ' + curlError.message);
+        }
         console.log('📨 Full AudD response:', JSON.stringify(data));
         
         if (data.status === 'success' && data.result) {
@@ -202,6 +225,31 @@ app.post('/identify', upload.single('audio'), async (req, res) => {
         }
 
         let data;
+        
+        // Try AudioTag first (FREE)
+        if (AUDIOTAG_API_KEY) {
+            try {
+                data = await recognizeWithAudioTag(filePath);
+                
+                if (data.status === 'success' && data.result && data.result.length > 0) {
+                    const track = data.result[0];
+                    console.log(`✅ AudioTag: ${track.title} - ${track.artist}`);
+                    return res.json({
+                        status: 'success',
+                        result: {
+                            title: track.title,
+                            artist: track.artist,
+                            album: track.album || 'Album inconnu',
+                            link: ''
+                        }
+                    });
+                }
+            } catch (atError) {
+                console.log('AudioTag failed, trying AudD:', atError.message);
+            }
+        }
+        
+        // Try AudD
         if (ACR_ACCESS_KEY && ACR_SECRET_KEY) {
             console.log('⏳ Envoi vers ACRCloud...');
             data = await recognizeWithACRCloud(filePath);
@@ -231,7 +279,7 @@ app.post('/identify', upload.single('audio'), async (req, res) => {
             console.log('⏳ Envoi vers API AudD...');
             const response = await axios.post('https://api.audd.io/', form, {
                 headers: form.getHeaders(),
-                timeout: 20000 
+                timeout: 60000 
             });
 
             data = response.data;
