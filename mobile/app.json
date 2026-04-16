@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "EkoFind",
+    "slug": "ekofind",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#050505"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#050505"
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA"
+      ],
+      "package": "com.ekofind.app"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Cette application a besoin d'accéder à vos photos pour sélectionner des vidéos."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Cette application a besoin d'accéder au microphone pour enregistrer l'audio."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Cette application a besoin d'accéder à la caméra pour enregistrer des vidéos.",
+          "recordAudioAndroid": true
+        }
+      ]
+    ]
+  }
+}
