@@ -6,6 +6,7 @@ const cors = require('cors');
 const fs = require('fs');
 const FormData = require('form-data');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express(); 
 app.use(cors());
@@ -19,6 +20,51 @@ if (!fs.existsSync(uploadDir)) {
 const upload = multer({ dest: uploadDir + '/', limits: { fileSize: 25 * 1024 * 1024 } });
 
 const AUDD_API_TOKEN = process.env.AUDD_API_TOKEN || "710700a1bebd7e387e268bf238669573";
+
+const ACR_HOST = process.env.ACR_HOST || "identify-us-west-2.acrcloud.com";
+const ACR_ACCESS_KEY = process.env.ACR_ACCESS_KEY || "";
+const ACR_SECRET_KEY = process.env.ACR_SECRET_KEY || "";
+
+async function recognizeWithACRCloud(filePath) {
+    if (!ACR_ACCESS_KEY || !ACR_SECRET_KEY) {
+        throw new Error("ACRCloud credentials not configured");
+    }
+    
+    console.log('🎵 ACRCloud识别开始...');
+    const timestamp = Math.floor(Date.now() / 1000);
+    const sampleBytes = fs.statSync(filePath).size;
+    console.log('📄 File size:', sampleBytes);
+    
+    const dataType = "audio";
+    const signatureVersion = "1";
+    
+    const stringToSign = `POST\n/v1/identify\n${dataType}\n${signatureVersion}\n${ACR_SECRET_KEY}\n${timestamp}`;
+    console.log('🔑 String to sign:', stringToSign.substring(0, 50));
+    
+    const signature = crypto.createHmac('sha1', ACR_SECRET_KEY)
+        .update(stringToSign)
+        .digest('base64');
+    
+    console.log('✅ Signature:', signature.substring(0, 20) + '...');
+    
+    const form = new FormData();
+    form.append('api_key', ACR_ACCESS_KEY);
+    form.append('sample', fs.createReadStream(filePath));
+    form.append('timestamp', timestamp);
+    form.append('signature', signature);
+    form.append('data_type', dataType);
+    form.append('signature_version', signatureVersion);
+    form.append('generate_song_payload', 'true');
+    
+    console.log('📤 Sending to ACRCloud...');
+    const response = await axios.post(`https://${ACR_HOST}/v1/identify`, form, {
+        headers: form.getHeaders(),
+        timeout: 25000
+    });
+    
+    console.log('📥 ACRCloud response:', JSON.stringify(response.data).substring(0, 200));
+    return response.data;
+}
 
 const activeRecordings = new Map();
 const cleanupInterval = 5 * 60 * 1000;
@@ -101,6 +147,7 @@ app.post('/stop-recording', upload.single('audio'), async (req, res) => {
         });
 
         const data = response.data;
+        console.log('📨 Full AudD response:', JSON.stringify(data));
         
         if (data.status === 'success' && data.result) {
             console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
@@ -154,35 +201,58 @@ app.post('/identify', upload.single('audio'), async (req, res) => {
             return res.json({ status: 'error', message: 'Audio trop court' });
         }
 
-        const form = new FormData();
-        form.append('api_token', AUDD_API_TOKEN);
-        form.append('file', fs.createReadStream(filePath));
-        form.append('return', 'apple_music,spotify');
-
-        console.log('⏳ Envoi vers API AudD...');
-        const response = await axios.post('https://api.audd.io/', form, {
-            headers: form.getHeaders(),
-            timeout: 20000 
-        });
-
-        const data = response.data;
-        console.log('📨 Réponse API AudD:', data.status);
-        
-        if (data.status === 'success' && data.result) {
-            console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
-            res.json({
-                status: 'success',
-                result: {
-                    title: data.result.title,
-                    artist: data.result.artist,
-                    album: data.result.album || 'Album inconnu',
-                    link: data.result.song_link || ''
-                }
-            });
-        } else if (data.error) {
-            res.json({ status: 'error', message: data.error.error_message || 'Erreur API' });
+        let data;
+        if (ACR_ACCESS_KEY && ACR_SECRET_KEY) {
+            console.log('⏳ Envoi vers ACRCloud...');
+            data = await recognizeWithACRCloud(filePath);
+            console.log('📨 Réponse ACRCloud:', data.status);
+            
+            if (data.status === 'success' && data.metadata && data.metadata.music) {
+                const music = data.metadata.music[0];
+                console.log(`✅ Reconnu: ${music.title} - ${music.artists?.[0]?.name}`);
+                res.json({
+                    status: 'success',
+                    result: {
+                        title: music.title,
+                        artist: music.artists?.[0]?.name || 'Unknown Artist',
+                        album: music.album?.name || 'Album inconnu',
+                        link: music.external_links?.[0]?.url || ''
+                    }
+                });
+            } else {
+                res.json({ status: 'error', message: 'Musique non reconnue' });
+            }
         } else {
-            res.json({ status: 'error', message: 'Musique non reconnue' });
+            const form = new FormData();
+            form.append('api_token', AUDD_API_TOKEN);
+            form.append('file', fs.createReadStream(filePath));
+            form.append('return', 'apple_music,spotify');
+
+            console.log('⏳ Envoi vers API AudD...');
+            const response = await axios.post('https://api.audd.io/', form, {
+                headers: form.getHeaders(),
+                timeout: 20000 
+            });
+
+            data = response.data;
+            console.log('📨 Réponse API AudD:', data.status);
+            
+            if (data.status === 'success' && data.result) {
+                console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
+                res.json({
+                    status: 'success',
+                    result: {
+                        title: data.result.title,
+                        artist: data.result.artist,
+                        album: data.result.album || 'Album inconnu',
+                        link: data.result.song_link || ''
+                    }
+                });
+            } else if (data.error) {
+                res.json({ status: 'error', message: data.error.error_message || 'Erreur API' });
+            } else {
+                res.json({ status: 'error', message: 'Musique non reconnue' });
+            }
         }
 
     } catch (error) {
@@ -192,11 +262,11 @@ app.post('/identify', upload.single('audio'), async (req, res) => {
             console.error('📨 API Response data:', JSON.stringify(error.response.data).substring(0, 200));
         }
         if (error.code === 'ECONNREFUSED') {
-            console.error('🔴 API AudD inaccessible - vérifier la connexion');
+            console.error('🔴 API inaccessible - vérifier la connexion');
             return res.status(503).json({ status: 'error', message: 'API inaccessible' });
         }
         if (error.code === 'ENOTFOUND') {
-            console.error('🔴 API AudD non trouvée - vérifier le DNS');
+            console.error('🔴 API non trouvée - vérifier le DNS');
             return res.status(503).json({ status: 'error', message: 'API non trouvée' });
         }
         res.status(500).json({ status: 'error', message: 'Erreur lors de l\'analyse.' });
