@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, Text, View, Pressable, Dimensions, Image, ScrollView, Platform, Alert, PermissionsAndroid } from 'react-native';
+import { StyleSheet, Text, View, Pressable, Dimensions, Image, ScrollView, Platform, Alert, PermissionsAndroid, Linking } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, FontAwesome5 } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import { CameraView, requestCameraPermissionsAsync } from 'expo-camera';
 
@@ -14,7 +14,7 @@ const CARD_BG = '#121212';
 const TEXT_MAIN = '#FFFFFF';
 const TEXT_SUB = '#888888';
 
-const MAX_RECORDING_DURATION = 15000;
+const MAX_RECORDING_DURATION = 30000;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('SEARCH');
@@ -31,6 +31,9 @@ export default function App() {
   const [cameraPermission, setCameraPermission] = useState(null);
   const [isCamRecording, setIsCamRecording] = useState(false);
   const cameraRef = useRef(null);
+  const [showDetails, setShowDetails] = useState(false);
+  const [podcastResult, setPodcastResult] = useState(null);
+  const [showPodcastDetails, setShowPodcastDetails] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -282,22 +285,36 @@ export default function App() {
       console.log('Server response:', data);
       
       if (data.status === 'success' && data.result) {
-        setResult(data.result);
+        if (isPodcast) {
+          setPodcastResult(data.result);
+        } else {
+          setResult(data.result);
+        }
       } else {
-        setResult({ 
-          title: data.result?.title || 'Not Found', 
-          artist: data.result?.artist || data.message || 'Try again with clearer audio',
-          link: data.result?.link || ''
-        });
+        if (isPodcast) {
+          setPodcastResult({ 
+            title: data.result?.title || 'Podcast Not Found', 
+            artist: data.result?.artist || data.message || 'Try again with clearer audio',
+            type: 'Podcast',
+            link: data.result?.link || ''
+          });
+        } else {
+          setResult({ 
+            title: data.result?.title || 'Not Found', 
+            artist: data.result?.artist || data.message || 'Try again with clearer audio',
+            link: data.result?.link || ''
+          });
+        }
       }
     } catch (error) {
       console.error('Send to server error:', error);
       if (isPodcast) {
         setPodcastRecordingStatus('error');
+        setPodcastResult({ title: 'Connection Error', artist: 'Check server and try again', type: 'Podcast' });
       } else {
         setRecordingStatus('error');
+        setResult({ title: 'Connection Error', artist: 'Check server and try again' });
       }
-      setResult({ title: 'Connection Error', artist: 'Check server and try again' });
     } finally {
       if (isPodcast) {
         setPodcastRecordingStatus('ready');
@@ -365,21 +382,120 @@ export default function App() {
              recordingStatus === 'error' ? 'ERROR' :
              isRecording ? "LISTENING" : "LISTEN"}
           </Text>
-          {isRecording && <Text style={styles.beaconTime}>{recordingTime}s / 15s</Text>}
+          {isRecording && <Text style={styles.beaconTime}>{recordingTime}s / 30s</Text>}
         </Pressable>
         <Text style={styles.heroTitle}>Identify Sound</Text>
         <Text style={styles.heroSub}>Hold to search for songs, podcasts, or cinematic audio samples.</Text>
       </View>
 
-      <View style={styles.matchCard}>
-        <View><Text style={styles.matchLabel}>RECENT MATCH</Text>
-        <Text style={styles.matchTitle}>{result ? result.title : "Audio Echoes"}</Text>
-        <Text style={styles.matchArtist}>{result ? result.artist : "Artist: Pulse Collective"}</Text>
+      <Pressable style={styles.matchCard} onPress={() => setShowDetails(!showDetails)}>
+        <View style={styles.matchImageContainer}>
+          {result?.image ? (
+            <Image source={{ uri: result.image }} style={styles.matchImage} />
+          ) : (
+            <View style={styles.matchImagePlaceholder}>
+              <MaterialCommunityIcons name="music-note" size={30} color={PRIMARY_COLOR} />
+            </View>
+          )}
         </View>
-        <Image source={{ uri: result?.image || 'https://picsum.photos/200' }} style={styles.matchImage} />
-      </View>
+        <View style={{flex: 1, marginLeft: 15}}>
+          <Text style={styles.matchLabel}>RECENT MATCH</Text>
+          <Text style={styles.matchTitle}>{result ? result.title : "Audio Echoes"}</Text>
+          <Text style={styles.matchArtist}>{result ? result.artist : "Artist: Pulse Collective"}</Text>
+          {result?.album && <Text style={styles.matchAlbum}>Album: {result.album}</Text>}
+        </View>
+        <Ionicons name={showDetails ? "chevron-up" : "chevron-down"} size={24} color={TEXT_SUB} />
+      </Pressable>
+      
+      {showDetails && result && (
+        <View style={styles.detailsCard}>
+          <Text style={styles.detailsTitle}>Details</Text>
+          
+          {result.album && (
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Album:</Text>
+              <Text style={styles.detailValue}>{result.album}</Text>
+            </View>
+          )}
+          
+          {result.duration && (
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Duration:</Text>
+              <Text style={styles.detailValue}>{result.duration}</Text>
+            </View>
+          )}
+          
+          {result.type && (
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Type:</Text>
+              <Text style={styles.detailValue}>{result.type}</Text>
+            </View>
+          )}
+          
+<Text style={styles.detailsTitle}>Listen On</Text>
+            
+            <Pressable style={styles.linkButton} onPress={() => Linking.openURL(result.spotify)}>
+              <View style={styles.linkButtonContent}>
+                <Ionicons name="musical-note" size={20} color="#1DB954" />
+                <Text style={styles.linkButtonText}>Spotify</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.linkButton} onPress={() => Linking.openURL(result.appleMusic)}>
+              <View style={styles.linkButtonContent}>
+                <Ionicons name="logo-apple" size={20} color="#FA243C" />
+                <Text style={styles.linkButtonText}>Apple Music</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.linkButton} onPress={() => Linking.openURL(result.deezer)}>
+              <View style={styles.linkButtonContent}>
+                <Ionicons name="radio" size={20} color="#FEAA2D" />
+                <Text style={styles.linkButtonText}>Deezer</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.linkButton} onPress={() => Linking.openURL(result.youtube)}>
+              <View style={styles.linkButtonContent}>
+                <Ionicons name="logo-youtube" size={20} color="#FF0000" />
+                <Text style={styles.linkButtonText}>YouTube</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.linkButton} onPress={() => Linking.openURL(result.link)}>
+              <View style={styles.linkButtonContent}>
+                <Ionicons name="search" size={20} color={PRIMARY_COLOR} />
+                <Text style={styles.linkButtonText}>More (Google)</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
 
-      <View style={styles.actionGrid}>
+           <Text style={[styles.detailsTitle, { marginTop: 15 }]}>Download</Text>
+           
+           {result.downloadUrl ? (
+             <>
+               <Pressable style={styles.downloadButton} onPress={() => Linking.openURL(result.downloadUrl)}>
+                 <Ionicons name="download" size={20} color="#000" />
+                 <Text style={styles.downloadButtonText}>Download Audio</Text>
+               </Pressable>
+               {result.fileSize && (
+                 <Text style={styles.fileSizeText}>File size: {result.fileSize}</Text>
+               )}
+             </>
+           ) : (
+             <Pressable style={styles.downloadButton} onPress={() => Linking.openURL(result.spotify)}>
+               <Ionicons name="search" size={20} color="#000" />
+               <Text style={styles.downloadButtonText}>Search to Download</Text>
+             </Pressable>
+           )}
+         </View>
+       )}
+
+       <View style={styles.actionGrid}>
         <View style={styles.actionItem}><Ionicons name="time-outline" size={24} color={PRIMARY_COLOR} /><Text style={styles.actionText}>HISTORY</Text></View>
         <View style={styles.actionItem}><Ionicons name="musical-notes" size={24} color={PRIMARY_COLOR} /><Text style={styles.actionText}>IDENTIFY</Text></View>
       </View>
@@ -532,7 +648,7 @@ export default function App() {
              podcastRecordingStatus === 'error' ? 'ERROR' :
              isRecording ? "LISTENING" : "IDENTIFY"}
           </Text>
-          {isRecording && <Text style={styles.pBeaconTime}>{recordingTime}s / 15s</Text>}
+          {isRecording && <Text style={styles.pBeaconTime}>{recordingTime}s / 30s</Text>}
         </Pressable>
       </View>
 
@@ -545,6 +661,115 @@ export default function App() {
         {podcastRecordingStatus === 'processing' ? 'PROCESSING...' : 
          isRecording ? `RECORDING ${recordingTime}s` : 'HOLD TO IDENTIFY'}
       </Text>
+      
+      {podcastResult && (
+        <Pressable style={styles.podcastResultCard} onPress={() => setShowPodcastDetails(!showPodcastDetails)}>
+          <View style={styles.podcastResultHeader}>
+            <View style={styles.podcastResultIcon}>
+              {podcastResult?.image ? (
+                <Image source={{ uri: podcastResult.image }} style={{ width: 50, height: 50, borderRadius: 25 }} />
+              ) : (
+                <MaterialCommunityIcons name="podcast" size={24} color={PRIMARY_COLOR} />
+              )}
+            </View>
+            <View style={styles.podcastResultInfo}>
+              <Text style={styles.podcastResultLabel}>PODCAST FOUND</Text>
+              <Text style={styles.podcastResultTitle}>{podcastResult.title}</Text>
+              <Text style={styles.podcastResultArtist}>{podcastResult.artist || podcastResult.author || 'Unknown Host'}</Text>
+              {podcastResult.type && <Text style={styles.podcastResultType}>{podcastResult.type}</Text>}
+            </View>
+            <Ionicons name={showPodcastDetails ? "chevron-up" : "chevron-down"} size={24} color={TEXT_SUB} />
+          </View>
+        </Pressable>
+      )}
+      
+      {showPodcastDetails && podcastResult && (
+        <View style={styles.podcastDetailsCard}>
+          <Text style={styles.podcastDetailsTitle}>Podcast Details</Text>
+          
+          {podcastResult.description && (
+            <View style={styles.podcastDetailRow}>
+              <Text style={styles.podcastDetailLabel}>Description:</Text>
+              <Text style={styles.podcastDetailValue}>{podcastResult.description}</Text>
+            </View>
+          )}
+          
+          {podcastResult.genre && (
+            <View style={styles.podcastDetailRow}>
+              <Text style={styles.podcastDetailLabel}>Genre:</Text>
+              <Text style={styles.podcastDetailValue}>{podcastResult.genre}</Text>
+            </View>
+          )}
+          
+          {podcastResult.year && (
+            <View style={styles.podcastDetailRow}>
+              <Text style={styles.podcastDetailLabel}>Year:</Text>
+              <Text style={styles.podcastDetailValue}>{podcastResult.year}</Text>
+            </View>
+          )}
+          
+<Text style={styles.podcastDetailsTitle}>Listen On</Text>
+            
+            <Pressable style={styles.podcastLinkButton} onPress={() => Linking.openURL(podcastResult.spotify)}>
+              <View style={styles.podcastLinkButtonContent}>
+                <Ionicons name="musical-note" size={20} color="#1DB954" />
+                <Text style={styles.podcastLinkText}>Spotify</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.podcastLinkButton} onPress={() => Linking.openURL(podcastResult.appleMusic)}>
+              <View style={styles.podcastLinkButtonContent}>
+                <Ionicons name="logo-apple" size={20} color="#FA243C" />
+                <Text style={styles.podcastLinkText}>Apple Podcasts</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.podcastLinkButton} onPress={() => Linking.openURL(podcastResult.deezer)}>
+              <View style={styles.podcastLinkButtonContent}>
+                <Ionicons name="radio" size={20} color="#FEAA2D" />
+                <Text style={styles.podcastLinkText}>Deezer</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.podcastLinkButton} onPress={() => Linking.openURL(podcastResult.youtube)}>
+              <View style={styles.podcastLinkButtonContent}>
+                <Ionicons name="logo-youtube" size={20} color="#FF0000" />
+                <Text style={styles.podcastLinkText}>YouTube</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+            
+            <Pressable style={styles.podcastLinkButton} onPress={() => Linking.openURL(podcastResult.link)}>
+              <View style={styles.podcastLinkButtonContent}>
+                <Ionicons name="search" size={20} color={PRIMARY_COLOR} />
+                <Text style={styles.podcastLinkText}>More (Google)</Text>
+              </View>
+              <Ionicons name="open-outline" size={18} color={TEXT_SUB} />
+            </Pressable>
+           
+           <Text style={styles.podcastDetailsTitle}>Download</Text>
+           
+           {podcastResult.downloadUrl ? (
+             <>
+               <Pressable style={styles.podcastDownloadButton} onPress={() => Linking.openURL(podcastResult.downloadUrl)}>
+                 <Ionicons name="download" size={20} color="#000" />
+                 <Text style={styles.podcastDownloadText}>Download Podcast</Text>
+               </Pressable>
+               {podcastResult.fileSize && (
+                 <Text style={styles.podcastFileSize}>File size: {podcastResult.fileSize}</Text>
+               )}
+             </>
+           ) : (
+             <Pressable style={styles.podcastDownloadButton} onPress={() => Linking.openURL(podcastResult.spotify)}>
+               <Ionicons name="search" size={20} color="#000" />
+               <Text style={styles.podcastDownloadText}>Search to Download</Text>
+             </Pressable>
+           )}
+         </View>
+       )}
       
       <Text style={styles.sectionTitle}>TRENDING PODCASTS</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalScroll}>
@@ -610,11 +835,28 @@ const styles = StyleSheet.create({
   heroTitle: { color: TEXT_MAIN, fontSize: 32, fontWeight: 'bold', marginTop: 20 },
   heroSub: { color: TEXT_SUB, textAlign: 'center', paddingHorizontal: 40, marginTop: 10, lineHeight: 20 },
   
-  matchCard: { backgroundColor: CARD_BG, marginHorizontal: 20, marginTop: 40, borderRadius: 30, padding: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  matchCard: { backgroundColor: CARD_BG, marginHorizontal: 20, marginTop: 40, borderRadius: 30, padding: 20, flexDirection: 'row', alignItems: 'center' },
+  matchImageContainer: { width: 60, height: 60, borderRadius: 15, overflow: 'hidden' },
+  matchImage: { width: 60, height: 60, borderRadius: 15 },
+  matchImagePlaceholder: { width: 60, height: 60, borderRadius: 15, backgroundColor: 'rgba(0,229,255,0.1)', justifyContent: 'center', alignItems: 'center' },
   matchLabel: { color: PRIMARY_COLOR, fontSize: 10, fontWeight: 'bold', marginBottom: 5 },
   matchTitle: { color: TEXT_MAIN, fontSize: 18, fontWeight: 'bold' },
   matchArtist: { color: TEXT_SUB, fontSize: 14 },
+  matchAlbum: { color: TEXT_SUB, fontSize: 11, marginTop: 4 },
   matchImage: { width: 60, height: 60, borderRadius: 15 },
+  detailsCard: { backgroundColor: CARD_BG, marginHorizontal: 20, marginTop: 10, borderRadius: 20, padding: 20 },
+  detailsTitle: { color: PRIMARY_COLOR, fontSize: 14, fontWeight: 'bold', marginBottom: 10, marginTop: 5 },
+  detailRow: { flexDirection: 'row', marginBottom: 8 },
+  detailLabel: { color: TEXT_SUB, fontSize: 12, width: 60 },
+  detailValue: { color: TEXT_MAIN, fontSize: 12, flex: 1 },
+  linkButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 15, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 10, marginBottom: 8 },
+  linkButtonContent: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  linkButtonText: { color: TEXT_MAIN, marginLeft: 10, fontSize: 14 },
+  downloadButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 14, paddingHorizontal: 20, backgroundColor: PRIMARY_COLOR, borderRadius: 12, marginBottom: 8 },
+  downloadButtonText: { color: '#000', marginLeft: 8, fontSize: 15, fontWeight: 'bold' },
+  fileSizeText: { color: TEXT_SUB, fontSize: 12, textAlign: 'center', marginBottom: 8 },
+  noDownloadContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 10 },
+  noDownloadText: { color: TEXT_SUB, fontSize: 12, marginLeft: 8 },
   
   actionGrid: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginTop: 20 },
   actionItem: { backgroundColor: CARD_BG, width: '48%', height: 100, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
@@ -664,6 +906,31 @@ const styles = StyleSheet.create({
   podcastSpectralContainer: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'center', height: 50, marginTop: 15 },
   podcastSpectralBar: { width: 5, marginHorizontal: 2, backgroundColor: PRIMARY_COLOR, borderRadius: 2 },
   podcastSpectralLabel: { color: TEXT_SUB, textAlign: 'center', fontSize: 9, marginTop: 8, letterSpacing: 1 },
+  
+  podcastResultCard: { backgroundColor: CARD_BG, marginHorizontal: 20, marginTop: 20, borderRadius: 25, padding: 15 },
+  podcastResultHeader: { flexDirection: 'row', alignItems: 'center' },
+  podcastResultIcon: { width: 50, height: 50, borderRadius: 25, backgroundColor: 'rgba(0,229,255,0.2)', justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+  podcastResultInfo: { flex: 1 },
+  podcastResultLabel: { color: PRIMARY_COLOR, fontSize: 10, fontWeight: 'bold', marginBottom: 3 },
+  podcastResultTitle: { color: TEXT_MAIN, fontSize: 16, fontWeight: 'bold' },
+  podcastResultArtist: { color: TEXT_SUB, fontSize: 13, marginTop: 2 },
+  podcastResultType: { color: PRIMARY_COLOR, fontSize: 11, marginTop: 3 },
+  
+  podcastDetailsCard: { backgroundColor: CARD_BG, marginHorizontal: 20, marginTop: 10, borderRadius: 20, padding: 20 },
+  podcastDetailRow: { flexDirection: 'row', marginBottom: 10 },
+  podcastDetailLabel: { color: TEXT_SUB, fontSize: 12, width: 80 },
+  podcastDetailValue: { color: TEXT_MAIN, fontSize: 12, flex: 1 },
+  podcastDetailsTitle: { color: PRIMARY_COLOR, fontSize: 14, fontWeight: 'bold', marginBottom: 10, marginTop: 10 },
+  
+  podcastLinkButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 15, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 12, marginBottom: 10 },
+  podcastLinkButtonContent: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  podcastLinkText: { color: '#FFFFFF', marginLeft: 12, fontSize: 14 },
+  
+  podcastDownloadButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 14, paddingHorizontal: 20, backgroundColor: PRIMARY_COLOR, borderRadius: 12, marginTop: 10 },
+  podcastDownloadText: { color: '#000', marginLeft: 8, fontSize: 15, fontWeight: 'bold' },
+  podcastFileSize: { color: '#888888', fontSize: 12, textAlign: 'center', marginTop: 8 },
+  podcastNoDownload: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 10, marginTop: 10 },
+  podcastNoDownloadText: { color: '#888888', fontSize: 12, marginLeft: 8 },
 
   bottomNav: { position: 'absolute', bottom: 0, width: '100%', height: 100, backgroundColor: CARD_BG, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#111', paddingBottom: 20 },
   navItem: { flex: 1, alignItems: 'center' },

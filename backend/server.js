@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: __dirname + '/.env' });
 const express = require('express');
 const multer = require('multer');
 const axios = require('axios');
@@ -43,7 +43,7 @@ async function recognizeWithAudioTag(filePath) {
     return response.data;
 }
 
-const AUDD_API_TOKEN = process.env.AUDD_API_TOKEN || "710700a1bebd7e387e268bf238669573";
+const AUDD_API_TOKEN = "17bcb9422e6c0214ad12d747f10c3d39";
 
 const ACR_HOST = process.env.ACR_HOST || "api.acrcloud.com";
 const ACR_ACCESS_KEY = process.env.ACR_ACCESS_KEY || "";
@@ -54,39 +54,41 @@ async function recognizeWithACRCloud(filePath) {
         throw new Error("ACRCloud credentials not configured");
     }
     
-    console.log('🎵 ACRCloud识别开始...');
+    console.log('🎵 ACRCloud starting...');
     const timestamp = Math.floor(Date.now() / 1000);
     const sampleBytes = fs.statSync(filePath).size;
     console.log('📄 File size:', sampleBytes);
     
-    const dataType = "audio";
-    const signatureVersion = "1";
+    const httpMethod = 'POST';
+    const httpUri = '/v1/identify';
+    const dataType = 'audio';
+    const signatureVersion = '1';
     
-    const stringToSign = `POST\n/v1/identify\n${dataType}\n${signatureVersion}\n${ACR_SECRET_KEY}\n${timestamp}`;
-    console.log('🔑 String to sign:', stringToSign.substring(0, 50));
+    const stringToSign = httpMethod + '\n' + httpUri + '\n' + ACR_ACCESS_KEY + '\n' + dataType + '\n' + signatureVersion + '\n' + timestamp;
+    console.log('🔑 String to sign:', stringToSign);
     
     const signature = crypto.createHmac('sha1', ACR_SECRET_KEY)
         .update(stringToSign)
         .digest('base64');
     
-    console.log('✅ Signature:', signature.substring(0, 20) + '...');
+    console.log('✅ Signature:', signature);
     
     const form = new FormData();
-    form.append('api_key', ACR_ACCESS_KEY);
+    form.append('access_key', ACR_ACCESS_KEY);
     form.append('sample', fs.createReadStream(filePath));
-    form.append('timestamp', timestamp);
+    form.append('sample_bytes', sampleBytes);
+    form.append('timestamp', timestamp.toString());
     form.append('signature', signature);
     form.append('data_type', dataType);
     form.append('signature_version', signatureVersion);
-    form.append('generate_song_payload', 'true');
     
     console.log('📤 Sending to ACRCloud...');
-    const response = await axios.post(`https://${ACR_HOST}/v1/identify`, form, {
+    const response = await axios.post('https://identify-eu-west-1.acrcloud.com/v1/identify', form, {
         headers: form.getHeaders(),
-        timeout: 25000
+        timeout: 60000
     });
     
-    console.log('📥 ACRCloud response:', JSON.stringify(response.data).substring(0, 200));
+    console.log('📥 ACRCloud response:', JSON.stringify(response.data).substring(0, 300));
     return response.data;
 }
 
@@ -160,67 +162,82 @@ app.post('/stop-recording', upload.single('audio'), async (req, res) => {
             return res.json({ status: "error", message: "Audio trop court" });
         }
 
-        // Try Python microservice first
+        // Try Python microservice first (port 3001)
         const { execSync } = require('child_process');
         
         try {
-            let pythonResult;
-            try {
-                pythonResult = execSync(`python3 /home/tchinda/Documents/@Codex/Node.js-shazam/shazam-project/backend/music_recognition.py < ${filePath} 2>/dev/null || echo '{"status":"error"}'`, { encoding: 'utf8', timeout: 30000 });
-                
-                // Try calling Python HTTP service instead
-                const pythonCmd = `curl -s -X POST http://localhost:3001/identify -F "file=@${filePath}"`;
-                pythonResult = execSync(pythonCmd, { encoding: 'utf8', timeout: 30000 });
-                
-                const pyData = JSON.parse(pythonResult);
-                if (pyData.status === 'success') {
-                    console.log('✅ Recognized via Python:', pyData.result?.title);
-                    return res.json(pyData);
-                }
-            } catch (pyError) {
-                console.log('⚠️ Python service failed:', pyError.message);
+            console.log('🔄 Trying Python microservice on port 3001...');
+            const pythonCmd = `curl -s -X POST http://localhost:3001/identify -F "audio=@${filePath}"`;
+            const pythonResult = execSync(pythonCmd, { encoding: 'utf8', timeout: 60000 });
+            const pyData = JSON.parse(pythonResult);
+            
+            if (pyData.status === 'success' && pyData.result) {
+                console.log('✅ Recognized via Python:', pyData.result?.title);
+                return res.json({
+                    status: 'success',
+                    result: {
+                        title: pyData.result.title,
+                        artist: pyData.result.artist,
+                        album: pyData.result.album || 'Album inconnu',
+                        link: pyData.result.link || '',
+                        spotify: '',
+                        appleMusic: '',
+                        deezer: ''
+                    }
+                });
+            } else {
+                console.log('⚠️ Python service returned:', pyData.message || pyData.status);
+                return res.json({ status: 'error', message: pyData.message || 'Music not recognized' });
             }
-        } catch (pyErr) {
-            console.log('Python not available:', pyErr.message);
+        } catch (pyError) {
+            console.log('⚠️ Python service unavailable:', pyError.message);
+            
+            // Fallback to AudD with curl with retry
+            let data = null;
+            
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    console.log(`🔄 Tentative ${attempt}/3 vers AudD...`);
+                    const curlCmd = `curl -s --retry 3 --retry-delay 2 -X POST https://api.audd.io/ -F "api_token=${AUDD_API_TOKEN}" -F "file=@${filePath}" -F "return=apple_music,spotify" --max-time 90`;
+                    const curlResponse = execSync(curlCmd, { encoding: 'utf8', timeout: 95000 });
+                    data = JSON.parse(curlResponse);
+                    break;
+                } catch (curlError) {
+                    console.log(`⚠️ Tentative ${attempt} echouee:`, curlError.message);
+                    if (attempt === 3) {
+                        data = { status: 'error', message: 'Connexion echouee apres 3 tentatives' };
+                    }
+                }
+            }
+            
+            console.log('📨 AudD response:', data?.status);
+
+            if (data?.status === 'success' && data?.result) {
+                console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
+                
+                const result = {
+                    title: data.result.title,
+                    artist: data.result.artist,
+                    album: data.result.album || 'Album inconnu',
+                    link: data.result.song_link || '',
+                    year: data.result || '',
+                    label: data.result.label || '',
+                    isrc: data.result.isrc || '',
+                    type: data.result.type || 'Music',
+                    appleMusic: data.result.apple_music?.url || '',
+                    spotify: data.result.spotify?.url || '',
+                    deezer: data.result.deezer?.url || '',
+                    youtube: data.result.youtube?.url || '',
+                    genre: data.result.genre || ''
+                };
+                
+                return res.json({ status: 'success', result });
+            }
+
+            return res.json({ status: 'error', message: data?.message || 'Audio non reconnu' });
         }
 
-        // Fallback to AudD with curl with retry
-        let data = null;
-        let curlCmd = '';
-        
-        for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-                console.log(`🔄 Tentative ${attempt}/3 vers AudD...`);
-                curlCmd = `curl -s --retry 3 --retry-delay 2 -X POST https://api.audd.io/ -F "api_token=${AUDD_API_TOKEN}" -F "file=@${filePath}" -F "return=apple_music,spotify" --max-time 90`;
-                curlResponse = execSync(curlCmd, { encoding: 'utf8', timeout: 95000 });
-                data = JSON.parse(curlResponse);
-                break;
-            } catch (curlError) {
-                console.log(`⚠️ Tentative ${attempt} echouee:`, curlError.message);
-                if (attempt === 3) {
-                    data = { status: 'error', message: 'Connexion echouee apres 3 tentatives' };
-                }
-            }
-        }
-        
-        console.log('📨 AudD response:', data?.status);
-
-    if (data?.status === 'success' && data?.result) {
-        console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
-        return res.json({
-            status: 'success',
-            result: {
-                title: data.result.title,
-                artist: data.result.artist,
-                album: data.result.album || 'Album inconnu',
-                link: data.result.song_link || ''
-            }
-        });
-    }
-
-    return res.json({ status: 'error', message: data?.message || 'Musique non reconnue' });
-
-    // Handle errors
+        // Handle errors
     } catch (error) {
         console.error("Erreur identification:", error.message);
         res.status(500).json({ error: "Erreur lors de l'analyse." });
@@ -238,9 +255,10 @@ app.get('/health', (req, res) => {
 app.post('/identify', upload.single('audio'), async (req, res) => {
     console.log('📥 Requête identify reçue');
     console.log('📎 Fichier reçu:', req.file);
+    console.log('📋 Body:', JSON.stringify(req.body).substring(0, 200));
     
     if (!req.file) {
-        console.log('❌ Pas de fichier audio');
+        console.log('❌ Pas de fichier audio - Headers:', req.headers['content-type']);
         return res.status(400).json({ status: 'error', message: 'Pas de fichier audio' });
     }
 
@@ -256,12 +274,40 @@ app.post('/identify', upload.single('audio'), async (req, res) => {
             return res.json({ status: 'error', message: 'Audio trop court' });
         }
 
-        let data;
+        // Try Python microservice first (port 3001)
+        const { execSync } = require('child_process');
         
-        // Try AudioTag first (FREE)
+        try {
+            console.log('🔄 Trying Python microservice on port 3001...');
+            const pythonCmd = `curl -s -X POST http://localhost:3001/identify -F "audio=@${filePath}"`;
+            const pythonResult = execSync(pythonCmd, { encoding: 'utf8', timeout: 60000 });
+            const pyData = JSON.parse(pythonResult);
+            
+            if (pyData.status === 'success' && pyData.result) {
+                console.log('✅ Recognized via Python:', pyData.result?.title);
+                return res.json({
+                    status: 'success',
+                    result: {
+                        title: pyData.result.title,
+                        artist: pyData.result.artist,
+                        album: pyData.result.album || 'Album inconnu',
+                        link: pyData.result.link || '',
+                        spotify: '',
+                        appleMusic: '',
+                        deezer: ''
+                    }
+                });
+            } else {
+                console.log('⚠️ Python service:', pyData.message || 'No match');
+            }
+        } catch (pyError) {
+            console.log('⚠️ Python service unavailable:', pyError.message);
+        }
+
+        // Fallback: Try AudioTag first (FREE)
         if (AUDIOTAG_API_KEY) {
             try {
-                data = await recognizeWithAudioTag(filePath);
+                const data = await recognizeWithAudioTag(filePath);
                 
                 if (data.status === 'success' && data.result && data.result.length > 0) {
                     const track = data.result[0];
@@ -277,78 +323,107 @@ app.post('/identify', upload.single('audio'), async (req, res) => {
                     });
                 }
             } catch (atError) {
-                console.log('AudioTag failed, trying AudD:', atError.message);
+                console.log('AudioTag failed:', atError.message);
             }
         }
         
-        // Try AudD
+        console.log('📊 Checking ACRCloud...', { key: !!ACR_ACCESS_KEY, secret: !!ACR_SECRET_KEY });
+        
+        // Try ACRCloud
         if (ACR_ACCESS_KEY && ACR_SECRET_KEY) {
-            console.log('⏳ Envoi vers ACRCloud...');
-            data = await recognizeWithACRCloud(filePath);
-            console.log('📨 Réponse ACRCloud:', data.status);
-            
-            if (data.status === 'success' && data.metadata && data.metadata.music) {
-                const music = data.metadata.music[0];
-                console.log(`✅ Reconnu: ${music.title} - ${music.artists?.[0]?.name}`);
-                res.json({
-                    status: 'success',
-                    result: {
-                        title: music.title,
-                        artist: music.artists?.[0]?.name || 'Unknown Artist',
-                        album: music.album?.name || 'Album inconnu',
-                        link: music.external_links?.[0]?.url || ''
+            console.log('⏳ Trying ACRCloud...');
+            try {
+                const data = await recognizeWithACRCloud(filePath);
+                console.log('📨 ACRCloud status:', data.status);
+                
+                if (data.status?.code === 0 && data.metadata) {
+                    const music = data.metadata.music?.[0] || data.metadata.humming?.[0];
+                    if (music) {
+                        console.log(`✅ ACRCloud: ${music.title} - ${music.artists?.[0]?.name}`);
+                        
+                        const externalMeta = music.external_metadata || {};
+                        const spotifyData = externalMeta.spotify || {};
+                        const deezerData = externalMeta.deezer || {};
+                        const appleData = externalMeta.apple_music || {};
+                        
+                        const title = music.title || '';
+                        const artist = music.artists?.map(a => a.name).join(', ') || '';
+                        const searchQuery = encodeURIComponent(`${title} ${artist}`.trim());
+                        const songInfo = encodeURIComponent(`${title} ${artist}`.trim());
+                        
+                        return res.json({
+                            status: 'success',
+                            result: {
+                                title: title,
+                                artist: artist,
+                                album: music.album?.name || music.release_date || 'Album inconnu',
+                                type: data.metadata.music ? 'Music' : 'Podcast/Humming',
+                                year: music.release_date ? new Date(music.release_date).getFullYear() : '',
+                                duration: music.duration_ms ? Math.round(music.duration_ms / 1000) + 's' : '',
+                                image: music.label || '',
+                                spotify: spotifyData.url || `https://open.spotify.com/search/${songInfo}`,
+                                appleMusic: appleData.url || `https://music.apple.com/search?term=${searchQuery}`,
+                                deezer: deezerData.url || `https://www.deezer.com/search/${songInfo}`,
+                                youtube: `https://www.youtube.com/results?search_query=${songInfo}`,
+                                link: `https://www.google.com/search?q=${songInfo}`,
+                                downloadUrl: '',
+                                fileSize: ''
+                            }
+                        });
                     }
-                });
-            } else {
-                res.json({ status: 'error', message: 'Musique non reconnue' });
-            }
-        } else {
-            const form = new FormData();
-            form.append('api_token', AUDD_API_TOKEN);
-            form.append('file', fs.createReadStream(filePath));
-            form.append('return', 'apple_music,spotify');
-
-            console.log('⏳ Envoi vers API AudD...');
-            const response = await axios.post('https://api.audd.io/', form, {
-                headers: form.getHeaders(),
-                timeout: 60000 
-            });
-
-            data = response.data;
-            console.log('📨 Réponse API AudD:', data.status);
-            
-            if (data.status === 'success' && data.result) {
-                console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
-                res.json({
-                    status: 'success',
-                    result: {
-                        title: data.result.title,
-                        artist: data.result.artist,
-                        album: data.result.album || 'Album inconnu',
-                        link: data.result.song_link || ''
-                    }
-                });
-            } else if (data.error) {
-                res.json({ status: 'error', message: data.error.error_message || 'Erreur API' });
-            } else {
-                res.json({ status: 'error', message: 'Musique non reconnue' });
+                }
+            } catch (acrError) {
+                console.log('ACRCloud failed:', acrError.message);
             }
         }
+        
+        // Try AudD with curl
+        let data = null;
+        
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                console.log(`🔄 Tentative ${attempt}/3 vers AudD...`);
+                const curlCmd = `curl -s --retry 3 --retry-delay 2 -X POST https://api.audd.io/ -F "api_token=${AUDD_API_TOKEN}" -F "file=@${filePath}" -F "return=apple_music,spotify" --max-time 90`;
+                console.log('📤 Curl cmd:', curlCmd.substring(0, 100) + '...');
+                const curlResponse = execSync(curlCmd, { encoding: 'utf8', timeout: 95000 });
+                console.log('📥 AudD raw response:', curlResponse.substring(0, 200));
+                data = JSON.parse(curlResponse);
+                break;
+            } catch (curlError) {
+                console.log(`⚠️ Tentative ${attempt} echouee:`, curlError.message);
+                if (attempt === 3) {
+                    data = { status: 'error', message: 'Connexion echouee apres 3 tentatives' };
+                }
+            }
+        }
+        
+        console.log('📨 AudD response:', data?.status);
+
+        if (data?.status === 'success' && data?.result) {
+            console.log(`✅ Reconnu: ${data.result.title} - ${data.result.artist}`);
+            
+            return res.json({
+                status: 'success',
+                result: {
+                    title: data.result.title,
+                    artist: data.result.artist,
+                    album: data.result.album || 'Album inconnu',
+                    link: data.result.song_link || '',
+                    year: data.result.release_date || data.result.year || '',
+                    label: data.result.label || '',
+                    type: data.result.type || 'Music',
+                    appleMusic: data.result?.apple_music?.url || '',
+                    spotify: data.result?.spotify?.url || '',
+                    deezer: data.result?.deezer?.url || '',
+                    youtube: data.result?.youtube?.url || ''
+                }
+            });
+        }
+
+        return res.json({ status: 'error', message: data?.message || 'Audio non reconnu' });
 
     } catch (error) {
         console.error('❌ Erreur identification:', error.message || error.code || error);
-        if (error.response) {
-            console.error('📨 API Response status:', error.response.status);
-            console.error('📨 API Response data:', JSON.stringify(error.response.data).substring(0, 200));
-        }
-        if (error.code === 'ECONNREFUSED') {
-            console.error('🔴 API inaccessible - vérifier la connexion');
-            return res.status(503).json({ status: 'error', message: 'API inaccessible' });
-        }
-        if (error.code === 'ENOTFOUND') {
-            console.error('🔴 API non trouvée - vérifier le DNS');
-            return res.status(503).json({ status: 'error', message: 'API non trouvée' });
-        }
         res.status(500).json({ status: 'error', message: 'Erreur lors de l\'analyse.' });
     } finally {
         if (filePath && fs.existsSync(filePath)) {
